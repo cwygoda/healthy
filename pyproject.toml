@@ -1,0 +1,21 @@
+[project]
+name = "healthy"
+version = "0.1.0"
+description = "CLI-driven Garmin Connect activity downloader"
+readme = "README.md"
+authors = [
+    { name = "Christian Wygoda", email = "christian.wygoda@wygoda.net" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "garminconnect>=0.2",
+    "rich>=13",
+    "typer>=0.12",
+]
+
+[project.scripts]
+healthy = "healthy:main"
+
+[build-system]
+requires = ["uv_build>=0.10.9,<0.11.0"]
+build-backend = "uv_build"
