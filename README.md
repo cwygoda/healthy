@@ -9,6 +9,13 @@ uv sync
 uv run healthy --help
 ```
 
+To install the `healthy` command globally:
+
+```bash
+./install.sh
+healthy --help
+```
+
 ## Authenticate
 
 ```bash
@@ -23,7 +30,7 @@ Credentials are used only to obtain Garmin tokens via `garminconnect`; tokens ar
 uv run healthy activities download
 ```
 
-By default, activities are read newest-first and the sync stops at the first activity already found in local storage (`~/.healthy/activities`). To scan past existing activities and fetch every missing one:
+By default, activities are read newest-first and the sync stops at the first activity already found in local storage (`~/Document/Activities`). To scan past existing activities and fetch every missing one:
 
 ```bash
 uv run healthy activities download --all-missing
