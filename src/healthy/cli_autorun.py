@@ -27,6 +27,7 @@ from healthy.cli_common import (
     DEFAULT_ACTIVITY_DIR,
     DEFAULT_AUTORUN_LOG,
     DEFAULT_AUTORUN_STATE,
+    DEFAULT_STORAGE_COMPRESSION,
     DEFAULT_TOKENSTORE,
     console,
 )
@@ -120,7 +121,7 @@ def autorun_tick(
     storage_compression: Annotated[
         StorageCompression,
         typer.Option("--storage-compression", case_sensitive=False, help="Compress stored activity files."),
-    ] = StorageCompression.NONE,
+    ] = DEFAULT_STORAGE_COMPRESSION,
     tokenstore: Annotated[
         Path,
         typer.Option("--tokenstore", help="Directory containing garminconnect auth tokens."),

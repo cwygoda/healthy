@@ -13,7 +13,7 @@ from healthy.adapters.rate_limit import RateLimitPolicy
 from healthy.adapters.storage import FileActivityStorage, StorageCompression
 from healthy.application import DownloadActivitiesUseCase
 from healthy.cli_autorun import autorun_app
-from healthy.cli_common import DEFAULT_ACTIVITY_DIR, DEFAULT_TOKENSTORE, console
+from healthy.cli_common import DEFAULT_ACTIVITY_DIR, DEFAULT_STORAGE_COMPRESSION, DEFAULT_TOKENSTORE, console
 from healthy.domain import Activity, DownloadFormat, DownloadSummary
 
 app = typer.Typer(
@@ -168,7 +168,7 @@ def download_activities(
             case_sensitive=False,
             help="Compress stored activity files.",
         ),
-    ] = StorageCompression.NONE,
+    ] = DEFAULT_STORAGE_COMPRESSION,
     tokenstore: Annotated[
         Path,
         typer.Option(
