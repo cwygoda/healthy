@@ -107,18 +107,21 @@ healthy activities download --max-activities 50
 
 ## Auto-run after wake on macOS
 
-Install a user LaunchAgent that checks for wake gaps and runs the downloader after the Mac was asleep/away longer than the threshold:
+Install a user LaunchAgent that runs the downloader when you come back to an awake Mac and the last successful sync has aged past the interval:
 
 ```bash
-healthy autorun install --sleep-threshold-minutes 30 --network-timeout-minutes 10
+healthy autorun install --sync-interval-minutes 30 --network-timeout-minutes 10
 ```
 
 Behavior:
 
-- normal per-minute checks exit silently
-- after a long sleep/wake gap, `healthy` waits briefly for network availability
-- then it runs `activities download`
+- checks run once a minute and exit silently when there is nothing to do
+- checks do nothing during DarkWake, the brief maintenance wakes macOS runs every few minutes while the lid is closed
+- on a full wake, if the last successful sync is older than the interval, `healthy` waits briefly for network availability
+- then it runs `activities download`, holding a power assertion so a re-sleep cannot kill the sync mid-download
 - only the final result notification is shown
+
+The interval is measured from the last *successful* sync, so a failed run retries at the next wake instead of being suppressed.
 
 Example notifications:
 
@@ -129,7 +132,7 @@ Garmin auth expired — run healthy auth login
 healthy auto-run failed — see log
 ```
 
-Check status:
+Check status, including when the last successful sync ran and whether the Mac is currently in a full wake:
 
 ```bash
 healthy autorun status
@@ -181,6 +184,18 @@ If auto-run did not fire, check:
 ```bash
 healthy autorun status
 cat ~/Library/Logs/healthy/autorun.log
+```
+
+`autorun status` shows the last successful sync and the current power state. The log only records ticks that decided to sync, so a quiet log means no sync was due. To see the decision for the current moment without downloading:
+
+```bash
+healthy autorun tick --dry-run
+```
+
+To watch the sleep/wake events autorun reacts to:
+
+```bash
+pmset -g log | grep -E "Sleep  |Wake  |DarkWake"
 ```
 
 If the installed command points at old code, reinstall:

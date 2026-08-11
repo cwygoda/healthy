@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Callable
 
@@ -13,10 +14,17 @@ from rich.table import Table
 from healthy.adapters.garmin import GarminConnectActivityClient
 from healthy.adapters.launchd import install_launch_agent, launch_agent_installed, uninstall_launch_agent
 from healthy.adapters.notifications import show_macos_notification
+from healthy.adapters.power import is_fully_awake, power_assertion
 from healthy.adapters.rate_limit import RateLimitPolicy
 from healthy.adapters.storage import FileActivityStorage, StorageCompression
 from healthy.application import DownloadActivitiesUseCase
-from healthy.autorun import AutorunConfig, AutorunStateStore, append_log, run_wake_detection_tick
+from healthy.autorun import (
+    AutorunConfig,
+    AutorunDecision,
+    AutorunStateStore,
+    append_log,
+    evaluate_autorun_tick,
+)
 from healthy.domain import Activity, DownloadFormat, DownloadSummary
 
 app = typer.Typer(
@@ -252,12 +260,13 @@ def download_activities(
 
 @autorun_app.command("install")
 def install_autorun(
-    sleep_threshold_minutes: Annotated[
+    sync_interval_minutes: Annotated[
         float,
         typer.Option(
+            "--sync-interval-minutes",
             "--sleep-threshold-minutes",
             min=1.0,
-            help="Minimum sleep/wake gap before autorun fires.",
+            help="Minimum age of the last successful sync before autorun fires.",
         ),
     ] = 30.0,
     network_timeout_minutes: Annotated[
@@ -278,7 +287,7 @@ def install_autorun(
 
     path = install_launch_agent(
         healthy_executable=healthy_executable,
-        sleep_threshold_minutes=sleep_threshold_minutes,
+        sync_interval_minutes=sync_interval_minutes,
         network_timeout_minutes=network_timeout_minutes,
     )
     console.print(f"[green]Installed autorun LaunchAgent:[/green] {path}")
@@ -294,19 +303,30 @@ def uninstall_autorun() -> None:
 
 @autorun_app.command("status")
 def autorun_status() -> None:
-    """Show autorun installation status."""
+    """Show autorun installation status and last successful sync."""
 
     if launch_agent_installed():
         console.print("[green]Autorun LaunchAgent is installed.[/green]")
     else:
         console.print("[yellow]Autorun LaunchAgent is not installed.[/yellow]")
 
+    last_sync = AutorunStateStore(DEFAULT_AUTORUN_STATE).read_last_sync()
+    if last_sync is None:
+        console.print("Last successful sync: [yellow]never[/yellow]")
+    else:
+        age_minutes = round((datetime.now(UTC) - last_sync).total_seconds() / 60)
+        local_time = last_sync.astimezone().strftime("%Y-%m-%d %H:%M")
+        console.print(f"Last successful sync: {local_time} ({age_minutes} minutes ago)")
+
+    wake_state = "full wake" if is_fully_awake() else "dark wake"
+    console.print(f"Current power state: {wake_state}")
+
 
 @autorun_app.command("tick", hidden=True)
 def autorun_tick(
-    sleep_threshold_minutes: Annotated[
+    sync_interval_minutes: Annotated[
         float,
-        typer.Option("--sleep-threshold-minutes", min=1.0),
+        typer.Option("--sync-interval-minutes", "--sleep-threshold-minutes", min=1.0),
     ] = 30.0,
     network_timeout_minutes: Annotated[
         float,
@@ -336,36 +356,65 @@ def autorun_tick(
     """Run one autorun tick. Intended for launchd."""
 
     logger = append_log(DEFAULT_AUTORUN_LOG)
-    result = run_wake_detection_tick(
-        state_store=AutorunStateStore(DEFAULT_AUTORUN_STATE),
+    state_store = AutorunStateStore(DEFAULT_AUTORUN_STATE)
+    result = evaluate_autorun_tick(
+        state_store=state_store,
         config=AutorunConfig(
-            sleep_threshold_minutes=sleep_threshold_minutes,
+            sync_interval_minutes=sync_interval_minutes,
             network_timeout_minutes=network_timeout_minutes,
         ),
         log=logger,
+        is_awake=is_fully_awake,
     )
     if dry_run:
         console.print(result.message)
-    if not result.triggered:
-        return
-    if not result.network_ready:
+    if result.decision is AutorunDecision.NETWORK_UNAVAILABLE:
+        logger("autorun aborted; network not ready")
         if not dry_run:
             show_macos_notification("healthy", "Network was not ready after wake.", "Auto-run failed")
         raise typer.Exit(1)
+    if not result.should_download:
+        return
     if dry_run:
         console.print("download skipped by --dry-run")
         return
 
+    summary = _download_for_autorun(
+        output_dir=output_dir,
+        download_format=download_format,
+        storage_compression=storage_compression,
+        tokenstore=tokenstore,
+        log=logger,
+    )
+    state_store.write_last_sync(datetime.now(UTC))
+    title, message = _autorun_download_notification(summary)
+    show_macos_notification("healthy", _with_human_timestamp(message), title)
+    logger(f"autorun download result: {message}")
+    if summary.failed or summary.rate_limited:
+        raise typer.Exit(1)
+
+
+def _download_for_autorun(
+    *,
+    output_dir: Path,
+    download_format: DownloadFormat,
+    storage_compression: StorageCompression,
+    tokenstore: Path,
+    log: Callable[[str], None],
+) -> DownloadSummary:
+    """Download inside a power assertion so a re-sleep cannot kill the sync."""
+
     try:
-        summary = _run_background_download(
-            output_dir=output_dir,
-            download_format=download_format,
-            storage_compression=storage_compression,
-            tokenstore=tokenstore,
-            log=logger,
-        )
+        with power_assertion():
+            return _run_background_download(
+                output_dir=output_dir,
+                download_format=download_format,
+                storage_compression=storage_compression,
+                tokenstore=tokenstore,
+                log=log,
+            )
     except BackgroundAuthError as exc:
-        logger(f"autorun auth failed: {exc}")
+        log(f"autorun auth failed: {exc}")
         show_macos_notification(
             "healthy",
             "Garmin auth expired — run healthy auth login",
@@ -373,19 +422,13 @@ def autorun_tick(
         )
         raise typer.Exit(1) from exc
     except Exception as exc:
-        logger(f"autorun failed: {exc}")
+        log(f"autorun failed: {exc}")
         show_macos_notification(
             "healthy",
             "healthy auto-run failed — see log",
             "Auto-run failed",
         )
         raise typer.Exit(1) from exc
-
-    title, message = _autorun_download_notification(summary)
-    show_macos_notification("healthy", _with_human_timestamp(message), title)
-    logger(f"autorun download result: {message}")
-    if summary.failed or summary.rate_limited:
-        raise typer.Exit(1)
 
 
 class BackgroundAuthError(RuntimeError):
@@ -429,8 +472,6 @@ def _raise_background_auth_required() -> str:
 
 
 def _with_human_timestamp(message: str) -> str:
-    from datetime import datetime
-
     return f"{message} at {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
 

@@ -16,7 +16,7 @@ ERROR_LOG_PATH = Path("~/Library/Logs/healthy/autorun.launchd.err.log")
 def install_launch_agent(
     *,
     healthy_executable: str,
-    sleep_threshold_minutes: float,
+    sync_interval_minutes: float,
     network_timeout_minutes: float,
     plist_path: Path = PLIST_PATH,
 ) -> Path:
@@ -27,7 +27,7 @@ def install_launch_agent(
     LOG_PATH.expanduser().parent.mkdir(parents=True, exist_ok=True)
     payload = build_plist(
         healthy_executable=healthy_executable,
-        sleep_threshold_minutes=sleep_threshold_minutes,
+        sync_interval_minutes=sync_interval_minutes,
         network_timeout_minutes=network_timeout_minutes,
     )
     with path.open("wb") as file:
@@ -56,7 +56,7 @@ def launch_agent_installed(*, plist_path: Path = PLIST_PATH) -> bool:
 def build_plist(
     *,
     healthy_executable: str,
-    sleep_threshold_minutes: float,
+    sync_interval_minutes: float,
     network_timeout_minutes: float,
 ) -> dict[str, object]:
     """Build the launchd plist payload."""
@@ -67,8 +67,8 @@ def build_plist(
             healthy_executable,
             "autorun",
             "tick",
-            "--sleep-threshold-minutes",
-            str(sleep_threshold_minutes),
+            "--sync-interval-minutes",
+            str(sync_interval_minutes),
             "--network-timeout-minutes",
             str(network_timeout_minutes),
         ],

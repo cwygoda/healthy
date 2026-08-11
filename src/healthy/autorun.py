@@ -7,6 +7,7 @@ import socket
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Callable
 
@@ -14,14 +15,24 @@ from typing import Callable
 Clock = Callable[[], datetime]
 Sleeper = Callable[[float], None]
 NetworkProbe = Callable[[], bool]
+WakeProbe = Callable[[], bool]
 Logger = Callable[[str], None]
+
+
+class AutorunDecision(StrEnum):
+    """Outcome of evaluating one autorun tick."""
+
+    DARK_WAKE = "dark wake"
+    RECENTLY_SYNCED = "recently synced"
+    NETWORK_UNAVAILABLE = "network unavailable"
+    READY = "ready"
 
 
 @dataclass(frozen=True, slots=True)
 class AutorunConfig:
     """Configuration for one autorun tick."""
 
-    sleep_threshold_minutes: float = 30.0
+    sync_interval_minutes: float = 30.0
     network_timeout_minutes: float = 10.0
     network_host: str = "connect.garmin.com"
     network_port: int = 443
@@ -30,64 +41,80 @@ class AutorunConfig:
 
 @dataclass(frozen=True, slots=True)
 class AutorunTickResult:
-    """Result of one autorun tick."""
+    """Result of evaluating one autorun tick."""
 
-    triggered: bool
-    network_ready: bool = False
-    gap_seconds: float | None = None
+    decision: AutorunDecision
+    staleness_seconds: float | None = None
     message: str = ""
+
+    @property
+    def should_download(self) -> bool:
+        return self.decision is AutorunDecision.READY
 
 
 class AutorunStateStore:
-    """JSON-backed state for wake gap detection."""
+    """JSON-backed record of the last successful sync."""
 
     def __init__(self, path: Path) -> None:
         self._path = path.expanduser()
 
-    def read_last_tick(self) -> datetime | None:
+    def read_last_sync(self) -> datetime | None:
         if not self._path.exists():
             return None
         try:
             payload = json.loads(self._path.read_text())
-            value = payload.get("last_tick_at")
+            value = payload.get("last_successful_sync_at")
             if not isinstance(value, str):
                 return None
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
         except (OSError, ValueError, json.JSONDecodeError):
             return None
 
-    def write_last_tick(self, now: datetime) -> None:
+    def write_last_sync(self, now: datetime) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"last_tick_at": _format_utc(now)}
+        payload = {"last_successful_sync_at": _format_utc(now)}
         self._path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
-def run_wake_detection_tick(
+def evaluate_autorun_tick(
     *,
     state_store: AutorunStateStore,
     config: AutorunConfig,
     log: Logger,
+    is_awake: WakeProbe,
     clock: Clock = lambda: datetime.now(UTC),
     sleep: Sleeper = time.sleep,
     network_probe: NetworkProbe | None = None,
 ) -> AutorunTickResult:
-    """Detect a wake gap and wait for network when autorun should fire."""
+    """Decide whether this tick should download, waiting for network if so.
+
+    Staleness is measured from the last *successful* sync rather than from the
+    previous tick. Tick gaps are useless as a trigger because launchd runs a
+    catch-up tick on every DarkWake, which on a sleeping Mac is every few
+    minutes, so a gap never accumulates.
+
+    Ticks that decide against downloading stay silent. They fire roughly once a
+    minute forever, and logging them buries the lines that matter.
+    """
+
+    if not is_awake():
+        return AutorunTickResult(
+            decision=AutorunDecision.DARK_WAKE,
+            message="Dark wake. Nothing to do.",
+        )
 
     now = clock()
-    last_tick = state_store.read_last_tick()
-    state_store.write_last_tick(now)
+    last_sync = state_store.read_last_sync()
+    staleness_seconds = None if last_sync is None else (now - last_sync).total_seconds()
+    interval_seconds = config.sync_interval_minutes * 60
+    if staleness_seconds is not None and staleness_seconds < interval_seconds:
+        return AutorunTickResult(
+            decision=AutorunDecision.RECENTLY_SYNCED,
+            staleness_seconds=staleness_seconds,
+            message=f"Synced {_minutes(staleness_seconds)} minutes ago. Nothing to do.",
+        )
 
-    if last_tick is None:
-        log("autorun tick initialized")
-        return AutorunTickResult(triggered=False, message="initialized")
-
-    gap_seconds = (now - last_tick).total_seconds()
-    threshold_seconds = config.sleep_threshold_minutes * 60
-    if gap_seconds < threshold_seconds:
-        log(f"autorun tick skipped; gap={gap_seconds:.0f}s threshold={threshold_seconds:.0f}s")
-        return AutorunTickResult(triggered=False, gap_seconds=gap_seconds, message="below threshold")
-
-    log(f"wake gap detected; gap={gap_seconds:.0f}s threshold={threshold_seconds:.0f}s")
+    log(f"sync due; {_describe_staleness(staleness_seconds)} interval={interval_seconds:.0f}s")
     probe = network_probe or make_tcp_network_probe(
         host=config.network_host,
         port=config.network_port,
@@ -100,22 +127,16 @@ def run_wake_detection_tick(
         log=log,
     )
     if not network_ready:
-        message = f"Wake gap: {_minutes(gap_seconds)} minutes. Network not ready."
-        log("autorun network wait timed out")
         return AutorunTickResult(
-            triggered=True,
-            network_ready=False,
-            gap_seconds=gap_seconds,
-            message=message,
+            decision=AutorunDecision.NETWORK_UNAVAILABLE,
+            staleness_seconds=staleness_seconds,
+            message="Network not ready.",
         )
 
-    message = f"Wake gap: {_minutes(gap_seconds)} minutes. Network is ready."
-    log("autorun wake detection complete")
     return AutorunTickResult(
-        triggered=True,
-        network_ready=True,
-        gap_seconds=gap_seconds,
-        message=message,
+        decision=AutorunDecision.READY,
+        staleness_seconds=staleness_seconds,
+        message="Network is ready.",
     )
 
 
@@ -174,6 +195,12 @@ def append_log(path: Path) -> Logger:
 
 def _format_utc(value: datetime) -> str:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _describe_staleness(staleness_seconds: float | None) -> str:
+    if staleness_seconds is None:
+        return "never synced;"
+    return f"last sync {staleness_seconds:.0f}s ago;"
 
 
 def _minutes(seconds: float) -> int:
