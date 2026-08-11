@@ -48,6 +48,7 @@ notes/                         # design notes and implementation plans
 
 - User-facing commands should be safe by default.
 - Background commands should log details and show concise result notifications only.
+- Notifications go out through `terminal-notifier` when installed, so a new one replaces the previous `healthy` notification instead of stacking; AppleScript is the fallback and cannot do that.
 - Keep README examples runnable by a user who installed with `./install.sh`.
 - Use `uv run healthy ...` only when documenting local development.
 

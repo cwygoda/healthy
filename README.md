@@ -123,6 +123,16 @@ Behavior:
 
 The interval is measured from the last *successful* sync, so a failed run retries at the next wake instead of being suppressed.
 
+### Keep notifications from piling up
+
+macOS offers no way to dismiss or replace a notification posted through AppleScript, so by default every auto-run leaves another one behind in Notification Center. Install [terminal-notifier](https://github.com/julienXX/terminal-notifier) and `healthy` uses it automatically, replacing the previous notification instead of stacking a new one:
+
+```bash
+brew install terminal-notifier
+```
+
+The first notification asks for permission — allow notifications for `terminal-notifier` in System Settings → Notifications. Without it installed, notifications still work, they just accumulate.
+
 Example notifications:
 
 ```text
