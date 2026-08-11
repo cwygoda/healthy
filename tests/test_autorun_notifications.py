@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from healthy.cli import _autorun_download_notification
+from healthy.cli_autorun import _autorun_download_notification
 from healthy.domain import DownloadSummary
 
 

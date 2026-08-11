@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from healthy.cli import DEFAULT_ACTIVITY_DIR
+from healthy.cli_common import DEFAULT_ACTIVITY_DIR
 
 
 class CliDefaultsTests(unittest.TestCase):
