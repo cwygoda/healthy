@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 
 NOTIFICATION_GROUP = "net.wygoda.healthy"
 TERMINAL_NOTIFIER = "terminal-notifier"
+HOMEBREW_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 
 
 def show_macos_notification(title: str, message: str, subtitle: str | None = None) -> None:
@@ -17,7 +19,7 @@ def show_macos_notification(title: str, message: str, subtitle: str | None = Non
     on screen; without it installed we fall back to a stacking AppleScript notification.
     """
 
-    terminal_notifier = shutil.which(TERMINAL_NOTIFIER)
+    terminal_notifier = find_terminal_notifier()
     if terminal_notifier is None:
         subprocess.run(["osascript", "-e", _notification_script(title, message, subtitle)], check=True)
         return
@@ -25,6 +27,20 @@ def show_macos_notification(title: str, message: str, subtitle: str | None = Non
         _terminal_notifier_command(terminal_notifier, title, message, subtitle),
         check=True,
     )
+
+
+def find_terminal_notifier() -> str | None:
+    """Locate terminal-notifier, also looking outside PATH.
+
+    launchd hands the autorun agent a bare PATH of /usr/bin:/bin:/usr/sbin:/sbin, so a
+    Homebrew-installed terminal-notifier is invisible to a plain PATH lookup and every
+    scheduled run would silently fall back to stacking AppleScript notifications.
+    """
+
+    on_path = shutil.which(TERMINAL_NOTIFIER)
+    if on_path:
+        return on_path
+    return shutil.which(TERMINAL_NOTIFIER, path=os.pathsep.join(HOMEBREW_BIN_DIRS))
 
 
 def _terminal_notifier_command(

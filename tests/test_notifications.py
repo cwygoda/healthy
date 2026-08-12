@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from healthy.adapters import notifications
@@ -8,10 +12,12 @@ from healthy.adapters.notifications import (
     NOTIFICATION_GROUP,
     _notification_script,
     _terminal_notifier_command,
+    find_terminal_notifier,
     show_macos_notification,
 )
 
 TERMINAL_NOTIFIER_PATH = "/opt/homebrew/bin/terminal-notifier"
+LAUNCHD_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 
 
 class TerminalNotifierCommandTests(unittest.TestCase):
@@ -55,6 +61,46 @@ class NotificationScriptTests(unittest.TestCase):
             _notification_script("healthy", 'say "hi"', None),
             'display notification "say \\"hi\\"" with title "healthy"',
         )
+
+
+class FindTerminalNotifierTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.homebrew_bin = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.homebrew_bin)
+        self.empty_bin = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.empty_bin)
+
+    def _install_terminal_notifier(self) -> Path:
+        executable = self.homebrew_bin / "terminal-notifier"
+        executable.touch(mode=0o755)
+        return executable
+
+    def test_found_in_homebrew_prefix_when_path_is_the_bare_launchd_one(self) -> None:
+        executable = self._install_terminal_notifier()
+
+        with (
+            mock.patch.dict(os.environ, {"PATH": str(self.empty_bin)}),
+            mock.patch.object(notifications, "HOMEBREW_BIN_DIRS", (str(self.homebrew_bin),)),
+        ):
+            self.assertEqual(find_terminal_notifier(), str(executable))
+
+    def test_path_wins_over_homebrew_prefix(self) -> None:
+        self._install_terminal_notifier()
+        on_path = self.empty_bin / "terminal-notifier"
+        on_path.touch(mode=0o755)
+
+        with (
+            mock.patch.dict(os.environ, {"PATH": str(self.empty_bin)}),
+            mock.patch.object(notifications, "HOMEBREW_BIN_DIRS", (str(self.homebrew_bin),)),
+        ):
+            self.assertEqual(find_terminal_notifier(), str(on_path))
+
+    def test_returns_none_when_not_installed_anywhere(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {"PATH": str(self.empty_bin)}),
+            mock.patch.object(notifications, "HOMEBREW_BIN_DIRS", (str(self.homebrew_bin),)),
+        ):
+            self.assertIsNone(find_terminal_notifier())
 
 
 class ShowNotificationTests(unittest.TestCase):
